@@ -413,12 +413,73 @@ async function getProductionNewDeals(deals, kv) {
   for (const deal of deals) {
     const existing = await kv.get(`seen:${deal.id}`);
 
-    if (!existing) {
+    if (!existing && !(await hasLegacySteamDiscount(deal, kv))) {
       newDeals.push(deal);
     }
   }
 
   return newDeals;
+}
+
+function steamDiscountAppId(id, url) {
+  return String(id || "").match(/^steam_(\d+)_/)?.[1] ||
+    String(url || "").match(/^https?:\/\/store\.steampowered\.com\/app\/(\d+)(?:\/|\?|$)/i)?.[1] || null;
+}
+
+function normalizeDiscountExpiry(value) {
+  const text = String(value || "").trim();
+  const iso = text.match(/^(\d{4}-\d{2}-\d{2})(?:$|T)/);
+  if (iso) {
+    const date = new Date(`${iso[1]}T00:00:00Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === iso[1]
+      ? iso[1] : null;
+  }
+  const timestamp = text.match(/^TIMESTAMP(\d{10}|\d{13})$/i);
+  if (timestamp) {
+    return new Date(Number(timestamp[1]) * (timestamp[1].length === 10 ? 1000 : 1))
+      .toISOString().slice(0, 10);
+  }
+  return null;
+}
+
+function steamDiscountIdentity(deal) {
+  if (deal.store !== "steam" || deal.type !== "discount") return null;
+  const appId = steamDiscountAppId(deal.id, deal.url);
+  if (!appId) return null;
+  const expires = normalizeDiscountExpiry(deal.expires) ||
+    normalizeDiscountExpiry(String(deal.id || "").replace(/^steam_\d+_/, ""));
+  return expires ? { appId, expires, id: `steam_${appId}_${expires}` } : null;
+}
+
+async function hasLegacySteamDiscount(deal, kv) {
+  const identity = steamDiscountIdentity(deal);
+  if (!identity) return false;
+
+  // Old keys contain either a textual date or TIMESTAMP. Their stored expires
+  // field identifies the actual sale period, independently of the key format.
+  let cursor;
+  do {
+    const page = await kv.list({ prefix: `seen:steam_${identity.appId}_`, ...(cursor ? { cursor } : {}) });
+    for (const key of page.keys) {
+      const raw = await kv.get(key.name);
+      if (!raw) continue;
+      let record;
+      try {
+        record = JSON.parse(raw);
+      } catch {
+        continue;
+      }
+      if (!record || record.store !== "steam" || record.type !== "discount") continue;
+      const previous = steamDiscountIdentity({ ...record, id: key.name.slice(5) });
+      if (previous?.id === identity.id) return true;
+    }
+    if (page.list_complete) break;
+    if (!page.cursor || page.cursor === cursor) {
+      throw new Error("Incomplete Steam discount history scan: missing KV cursor.");
+    }
+    cursor = page.cursor;
+  } while (true);
+  return false;
 }
 
 async function sendNewDealsToDiscord(deals, env) {
@@ -935,8 +996,10 @@ function parseRSS(xml, feedType) {
       priceRaw
     );
 
+    const identity = steamDiscountIdentity({ id: guid, url: link, store, type, expires });
+
     deals.push({
-      id: guid,
+      id: identity?.id || guid,
 
       title,
 
@@ -950,7 +1013,7 @@ function parseRSS(xml, feedType) {
 
       discount,
 
-      expires: expires || null,
+      expires: identity?.expires || expires || null,
 
       url: link,
 
