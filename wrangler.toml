@@ -1,0 +1,13 @@
+name = "abandon-bot"
+main = "abandon_bot.js"
+compatibility_date = "2026-09-30"
+no_bundle = true
+find_additional_modules = false
+upload_source_maps = false
+keep_vars = true
+[[kv_namespaces]]
+binding = "DEALS_KV"
+id = "2bc9b903725c4ab4beaf15eeca1bbf3b"
+
+[triggers]
+crons = ["0 */4 * * *"]
