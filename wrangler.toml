@@ -1,6 +1,6 @@
 name = "abandon-bot"
 main = "abandon_bot.js"
-compatibility_date = "2026-09-30"
+compatibility_date = "2026-09-29"
 no_bundle = true
 find_additional_modules = false
 upload_source_maps = false
